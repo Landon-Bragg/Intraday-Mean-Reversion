@@ -1,0 +1,18 @@
+INTRADAY MEAN REVERSION STRATEGY - BACKTEST SUMMARY
+=======================================================
+
+PERFORMANCE METRICS:
+Total Return: 4.50%
+Annualized Return: 37.76%
+Sharpe Ratio: 6.30
+Maximum Drawdown: -5.45%
+Win Rate: 62.0%
+
+TRADING ACTIVITY:
+Total Trades: 206
+Symbols Traded: 3
+Avg Trades per Symbol: 69
+
+ANALYSIS:
+✓ Strategy exceeds target Sharpe ratio of 1.5
+✓ Drawdown within acceptable limits (<25%)
