@@ -14,6 +14,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List
 
+
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
@@ -25,6 +26,8 @@ from backtesting.engine import BacktestEngine
 from visualization.dashboard import TradingDashboard
 from visualization.reports import PerformanceReporter
 
+
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +38,8 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
 
 
 class TradingStrategyOrchestrator:
@@ -291,6 +296,77 @@ class TradingStrategyOrchestrator:
             self.dashboard.update_data(results)
         
         self.dashboard.run_server(debug=False, port=port)
+        def optimize_factor_weights(self, symbols: List[str] = None, days: int = 20) -> Dict:
+            """Optimize factor weights to maximize Sharpe ratio."""
+            from scipy.optimize import minimize
+
+            if symbols is None:
+                symbols = self.config['data']['symbols']
+
+            def objective(weights):
+                # Set new weights
+                weight_dict = {
+                    'rsi_factor': weights[0],
+                    'vwap_factor': weights[1],
+                    'gap_factor': weights[2],
+                    'vol_regime_factor': weights[3],
+                    'time_factor': weights[4],
+                    'volume_factor': weights[5],
+                    'support_resistance_factor': weights[6],
+                    'market_regime_factor': weights[7]
+                }
+                self.config['strategy']['factor_weights'] = weight_dict
+                self.setup_components()
+
+                results = self.run_full_backtest(symbols, days=days)
+                return -results['portfolio_metrics']['sharpe_ratio']
+
+            initial_weights = np.array([0.125] * 8)
+            bounds = [(0.05, 0.3)] * 8
+            constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+
+            result = minimize(objective, initial_weights, method='SLSQP',
+                            bounds=bounds, constraints=constraints)
+
+            optimized_weights = result.x
+            logger.info(f"Optimized factor weights: {optimized_weights}")
+
+            return {
+                'optimized_weights': optimized_weights,
+                'success': result.success,
+                'final_sharpe': -result.fun
+            }
+        
+        def run_walk_forward_analysis(self, symbols: List[str] = None,
+                                    total_days: int = 90, train_days: int = 60, test_days: int = 30) -> pd.DataFrame:
+            """Perform walk-forward analysis with retraining."""
+
+            if symbols is None:
+                symbols = self.config['data']['symbols']
+
+            results = []
+            for start_offset in range(0, total_days - train_days, test_days):
+                logger.info(f"Walk-forward period: Train {start_offset}-{start_offset + train_days}, "
+                            f"Test {start_offset + train_days}-{start_offset + train_days + test_days}")
+
+                # Train (simulate training optimization phase)
+                train_result = self.run_full_backtest(symbols, days=train_days)
+
+                # Test (simulate testing out-of-sample)
+                test_result = self.run_full_backtest(symbols, days=test_days)
+
+                results.append({
+                    'train_return': train_result['portfolio_metrics']['total_return'],
+                    'test_return': test_result['portfolio_metrics']['total_return'],
+                    'train_sharpe': train_result['portfolio_metrics']['sharpe_ratio'],
+                    'test_sharpe': test_result['portfolio_metrics']['sharpe_ratio']
+                })
+
+            df = pd.DataFrame(results)
+            logger.info(f"Walk-forward analysis results:\n{df}")
+            return df
+
+
 
 
 def main():

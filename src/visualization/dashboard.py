@@ -123,9 +123,16 @@ class TradingDashboard:
              Input('interval-component', 'n_intervals')]
         )
         def update_charts(time_range, n_intervals):
-            # Generate sample data (replace with actual data)
-            dates = pd.date_range(start='2024-01-01', periods=100, freq='D')
-            portfolio_values = 1000000 * np.cumprod(1 + np.random.normal(0.001, 0.02, 100))
+            if not hasattr(self, "results") or not self.results:
+                raise dash.exceptions.PreventUpdate
+
+            portfolio_df = self.results['portfolio_metrics'].get('portfolio_timeseries')  # You may need to add this in backtest
+            if portfolio_df is None:
+                raise dash.exceptions.PreventUpdate
+
+            # Use actual portfolio value
+            dates = portfolio_df.index
+            portfolio_values = portfolio_df['value']
             
             # Portfolio performance chart
             portfolio_fig = go.Figure()
