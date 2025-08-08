@@ -161,6 +161,10 @@ class TradingStrategyOrchestrator:
         logger.info("Backtest completed successfully")
         return portfolio_results
     
+        print(f"{symbol} equity curve:")
+        print(backtest_results['results'].get('equity_curve'))
+
+    
     def _aggregate_results(self, individual_results: Dict) -> Dict:
         """Aggregate individual stock results into portfolio metrics."""
         logger.info("Aggregating portfolio results...")
@@ -202,6 +206,28 @@ class TradingStrategyOrchestrator:
             'win_rate': 0.62  # Placeholder - would calculate from actual trades
         }
         
+        portfolio_timeseries = None
+        try:
+            # Try to build a portfolio time series by averaging individual equity curves
+            all_equity_curves = []
+            for result in individual_results.values():
+                equity = result['backtest']['results'].get('equity_curve')
+                if isinstance(equity, pd.Series):
+                    all_equity_curves.append(equity)
+
+            if all_equity_curves:
+                # Align by date and take the mean to simulate portfolio value
+                df = pd.concat(all_equity_curves, axis=1)
+                portfolio_timeseries = df.mean(axis=1).to_frame(name='value')
+                portfolio_timeseries.index.name = 'date'
+        except Exception as e:
+            logger.warning(f"Failed to generate portfolio time series: {str(e)}")
+
+        # Store it in results so the dashboard can read it
+        portfolio_metrics['portfolio_timeseries'] = portfolio_timeseries
+        logger.info(f"Portfolio timeseries head:\n{portfolio_timeseries.head()}")
+
+
         return {
             'individual_results': individual_results,
             'portfolio_metrics': portfolio_metrics,

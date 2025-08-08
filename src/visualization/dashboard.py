@@ -43,10 +43,7 @@ class TradingDashboard:
             html.Div([
                 # Performance metrics row
                 html.Div([
-                    self._create_metric_card("Total Return", "24.5%", "#27ae60"),
-                    self._create_metric_card("Sharpe Ratio", "2.1", "#3498db"),
-                    self._create_metric_card("Max Drawdown", "-12.3%", "#e74c3c"),
-                    self._create_metric_card("Win Rate", "62%", "#f39c12"),
+                    html.Div(id='metrics-row', style={'display': 'flex', 'justifyContent': 'space-around', 'margin': '20px 0'}),
                 ], style={'display': 'flex', 'justifyContent': 'space-around',
                          'margin': '20px 0'}),
                 
@@ -222,6 +219,24 @@ class TradingDashboard:
                 title='Risk Metrics Dashboard',
                 template='plotly_white'
             )
+
+            @self.app.callback(
+                Output('metrics-row', 'children'),
+                Input('interval-component', 'n_intervals')
+            )
+            def update_metrics(n):
+                if not hasattr(self, "results") or not self.results:
+                    raise dash.exceptions.PreventUpdate
+
+                metrics = self.results['portfolio_metrics']
+                
+                return [
+                    self._create_metric_card("Total Return", f"{metrics['total_return']:.2%}", "#27ae60"),
+                    self._create_metric_card("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}", "#3498db"),
+                    self._create_metric_card("Max Drawdown", f"{metrics['max_drawdown']:.2%}", "#e74c3c"),
+                    self._create_metric_card("Win Rate", f"{metrics['win_rate']:.1%}", "#f39c12"),
+                ]
+
             
             return portfolio_fig, drawdown_fig, factor_fig, risk_fig
         
@@ -230,10 +245,6 @@ class TradingDashboard:
         self.app.run(debug=debug, port=port)
 
     def update_data(self, results: Dict):
-        """
-        Update dashboard data with new backtest results.
-        This should store the results for use in layout/rendering.
-        """
         self.results = results
 
 
