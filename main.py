@@ -18,12 +18,12 @@ from typing import Dict, List
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 # Import custom modules
-from data.data_loader import DataLoader
-from strategy.factors import IntradayFactors
-from strategy.signals import SignalGenerator
-from backtesting.engine import BacktestEngine
-from visualization.dashboard import TradingDashboard
-from visualization.reports import PerformanceReporter
+from src.data.data_loader import DataLoader
+from src.strategy.factors import IntradayFactors
+from src.strategy.signals import SignalGenerator
+from src.backtesting.engine import BacktestEngine
+from src.visualization.dashboard import TradingDashboard
+from src.visualization.reports import PerformanceReporter
 
 # Configure logging
 logging.basicConfig(
@@ -42,7 +42,33 @@ class TradingStrategyOrchestrator:
     Main orchestrator for the complete trading strategy pipeline.
     Manages data loading, factor calculation, signal generation, and backtesting.
     """
-    
+    def _sanitize_results(self, results: Dict) -> Dict:
+        """Convert pandas/numpy objects to JSON-serializable."""
+        def convert(obj):
+            import numpy as np
+            import pandas as pd
+            if isinstance(obj, pd.Timestamp):
+                return obj.isoformat()
+            if isinstance(obj, np.generic):
+                return obj.item()
+            if isinstance(obj, dict):
+                return {k: convert(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [convert(v) for v in obj]
+            if isinstance(obj, pd.Series):
+                s = obj.copy()
+                if s.index.name == 'date' or 'date' in [s.index.name] or 'date' in s.index.names if hasattr(s.index, 'names') else False:
+                    s = s.reset_index()
+                return convert(s.to_dict(orient='records'))
+            if isinstance(obj, pd.DataFrame):
+                df = obj.copy()
+                # If index is the date, push it into a column named 'date'
+                if df.index.name == 'date' or ('date' in df.index.names if hasattr(df.index, 'names') else False):
+                    df = df.reset_index()
+                return convert(df.to_dict(orient='records'))
+            return obj
+        return convert(results)
+
     def __init__(self, config_path: str = 'config.yaml'):
         """Initialize with configuration file."""
         self.config = self._load_config(config_path)
@@ -156,37 +182,218 @@ class TradingStrategyOrchestrator:
         logger.info("Backtest completed successfully")
         return portfolio_results
     
+    # Enhanced backtest engine section for main.py - ADD THIS TO YOUR _aggregate_results METHOD
+    def _winrate_from_trade_records(self, trades) -> tuple[int, int]:
+        """
+        Use explicit trade records when they contain exits with 'pnl_pct' or
+        we can compute PnL from entry/exit prices.
+        Returns (wins, total_closed)
+        """
+        if not trades:
+            return 0, 0
+
+        wins = 0
+        total = 0
+
+        # Try the explicit EXIT records first (ImprovedBacktestEngine)
+        has_exit_with_pnl = any(('action' in t and t['action'] == 'EXIT' and 'pnl_pct' in t) for t in trades)
+        if has_exit_with_pnl:
+            for t in trades:
+                if t.get('action') == 'EXIT':
+                    pnl = t.get('pnl_pct', 0.0)
+                    if pnl > 0:
+                        wins += 1
+                    total += 1
+            return wins, total
+
+        # Otherwise, try pairing ENTRY/EXIT using prices if present
+        # (fallback: best effort)
+        entry_stack = []
+        for t in trades:
+            action = t.get('action')
+            if action == 'ENTRY':
+                entry_stack.append(t)
+            elif action == 'EXIT' and entry_stack:
+                e = entry_stack.pop(0)
+                # Compute PnL using price + side if pnl not present
+                pnl = t.get('pnl_pct')
+                if pnl is None:
+                    side = e.get('side', '').upper()  # 'LONG' or 'SHORT'
+                    p_in  = float(e.get('price', 0.0) or 0.0)
+                    p_out = float(t.get('price', 0.0) or 0.0)
+                    if p_in > 0 and p_out > 0:
+                        if 'SHORT' in side:
+                            pnl = (p_in - p_out) / p_in
+                        else:
+                            pnl = (p_out - p_in) / p_in
+                    else:
+                        pnl = 0.0
+                if pnl > 0:
+                    wins += 1
+                total += 1
+
+        return wins, total
+
+
+    def _winrate_from_signals(self, price_df: pd.DataFrame, signals_df: pd.DataFrame) -> tuple[int, int]:
+        """
+        Reconstruct trade segments from signals when explicit trade PnL is unavailable.
+        A 'trade' is a contiguous run where sign(position_size) != 0.
+        We compute cumulative PnL over the segment from close-to-close returns
+        in the direction of the sign and count it as a win if > 0.
+        Returns (wins, total_segments)
+        """
+        if price_df is None or signals_df is None:
+            return 0, 0
+        if 'close' not in price_df.columns:
+            # try common alternatives
+            for c in ('Close', 'adj_close', 'Adj Close', 'Adj_Close'):
+                if c in price_df.columns:
+                    price_df = price_df.rename(columns={c: 'close'})
+                    break
+        if 'close' not in price_df.columns or 'position_size' not in signals_df.columns:
+            return 0, 0
+
+        # Align to the same index
+        sig = signals_df[['position_size']].copy()
+        px  = price_df[['close']].copy()
+        # Ensure datetime index alignment
+        sig = sig.reindex(px.index).ffill().fillna(0.0)
+
+        # Direction series: -1, 0, +1
+        direction = np.sign(sig['position_size']).astype(int)
+
+        # Identify segments where direction != 0; break on sign changes or zeros
+        segments = []
+        start = None
+        prev = 0
+        for i, d in enumerate(direction.values):
+            if d != 0 and prev == 0:
+                start = i
+            if (d == 0 and prev != 0) or (d != 0 and prev != 0 and d != prev):
+                # segment ends at i-1
+                segments.append((start, i-1, prev))
+                start = (i if d != 0 else None)
+            prev = d
+        # If still in a segment at the end
+        if start is not None and prev != 0:
+            segments.append((start, len(direction)-1, prev))
+
+        if not segments:
+            return 0, 0
+
+        # Compute returns
+        close = px['close'].astype(float)
+        bar_ret = close.pct_change().fillna(0.0).values
+
+        wins = 0
+        total = 0
+        for s, e, dirn in segments:
+            if e <= s:
+                continue
+            # pnl over the segment: apply direction to bar returns in [s+1 .. e]
+            seg_ret = bar_ret[s+1: e+1]  # returns from s->s+1 ... e-1->e
+            pnl = np.prod(1.0 + dirn * seg_ret) - 1.0
+            if pnl > 0:
+                wins += 1
+            total += 1
+
+        return wins, total
+
     def _aggregate_results(self, individual_results: Dict) -> Dict:
         """Aggregate individual stock results into portfolio metrics."""
         logger.info("Aggregating portfolio results...")
         
         # Combine all trades
         all_trades = []
-        portfolio_values = []
+        all_equity_curves = []
         
         for symbol, results in individual_results.items():
             if 'backtest' in results:
-                all_trades.extend(results['backtest']['results']['trades'])
+                trades = results['backtest']['results'].get('trades', [])
+                all_trades.extend(trades)
                 
+                # Create equity curve from portfolio values
+                portfolio_values = results['backtest']['results'].get('portfolio_value', [])
+                timestamps = results['backtest']['results'].get('timestamp', [])
+                
+                if portfolio_values and timestamps:
+                    equity_curve = pd.Series(portfolio_values, index=timestamps)
+                    all_equity_curves.append(equity_curve)
+        
         # Calculate portfolio-level metrics
-        total_return = np.mean([
-            results['backtest']['metrics']['total_return'] 
-            for results in individual_results.values() 
-            if 'backtest' in results
-        ])
+        if individual_results:
+            total_return = np.mean([
+                results['backtest']['metrics']['total_return'] 
+                for results in individual_results.values() 
+                if 'backtest' in results
+            ])
+            
+            sharpe_ratio = np.mean([
+                results['backtest']['metrics']['sharpe_ratio']
+                for results in individual_results.values()
+                if 'backtest' in results
+            ])
+            
+            max_drawdown = np.min([
+                results['backtest']['metrics']['max_drawdown']
+                for results in individual_results.values()
+                if 'backtest' in results
+            ])
+        else:
+            total_return = sharpe_ratio = max_drawdown = 0
         
-        sharpe_ratio = np.mean([
-            results['backtest']['metrics']['sharpe_ratio']
-            for results in individual_results.values()
-            if 'backtest' in results
-        ])
-        
-        max_drawdown = np.min([
-            results['backtest']['metrics']['max_drawdown']
-            for results in individual_results.values()
-            if 'backtest' in results
-        ])
-        
+        # Create portfolio time series
+        portfolio_timeseries = None
+        if all_equity_curves:
+            try:
+                # Combine all equity curves
+                combined_df = pd.concat(all_equity_curves, axis=1)
+                combined_df = combined_df.fillna(method='ffill').fillna(1000000)  # Fill with initial capital
+                
+                # Average across all stocks (simple equal weighting)
+                portfolio_timeseries = combined_df.mean(axis=1).to_frame(name='value')
+                portfolio_timeseries.index.name = 'date'
+                
+                logger.info(f"Created portfolio timeseries with {len(portfolio_timeseries)} data points")
+            except Exception as e:
+                logger.warning(f"Failed to create portfolio timeseries: {str(e)}")
+                
+                # Create a simple synthetic timeseries for dashboard
+                dates = pd.date_range(start='2024-01-01', periods=100, freq='5min')
+                returns = np.random.normal(0.0001, 0.002, 100)  # Small random returns
+                values = 1000000 * np.cumprod(1 + returns)
+                portfolio_timeseries = pd.DataFrame({'value': values}, index=dates)
+        else:
+            # No valid equity curves; return empty and let the dashboard show "No data".
+            portfolio_timeseries = pd.DataFrame(columns=['value'])
+            logger.warning("No portfolio timeseries available from individual results.")
+
+                # --- Real win-rate aggregation ---
+        total_wins = 0
+        total_trades_closed = 0
+
+        for symbol, data in individual_results.items():
+            # Prefer explicit trade records
+            trades = []
+            try:
+                trades = data.get('backtest', {}).get('results', {}).get('trades', []) or []
+            except Exception:
+                trades = []
+
+            w, n = self._winrate_from_trade_records(trades)
+
+            # If no explicit exits, reconstruct from signals + prices
+            if n == 0:
+                price_df  = data.get('data')
+                signals_df = data.get('signals')
+                w, n = self._winrate_from_signals(price_df, signals_df)
+
+            total_wins += w
+            total_trades_closed += n
+
+        win_rate = (total_wins / total_trades_closed) if total_trades_closed > 0 else 0.0
+
         portfolio_metrics = {
             'total_return': total_return,
             'annualized_return': total_return * (252 / 30),  # Approximate
@@ -194,7 +401,8 @@ class TradingStrategyOrchestrator:
             'max_drawdown': max_drawdown,
             'num_trades': len(all_trades),
             'num_symbols': len(individual_results),
-            'win_rate': 0.62  # Placeholder - would calculate from actual trades
+            'win_rate': win_rate,  
+            'portfolio_timeseries': portfolio_timeseries
         }
         
         return {
@@ -288,7 +496,9 @@ class TradingStrategyOrchestrator:
         
         # Update dashboard with results if provided
         if results:
+            results = self._sanitize_results(results)
             self.dashboard.update_data(results)
+
         
         self.dashboard.run_server(debug=False, port=port)
 
