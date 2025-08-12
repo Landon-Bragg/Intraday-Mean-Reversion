@@ -1,0 +1,96 @@
+# config.yaml
+
+
+# Trading Parameters
+trading:
+  universe_size: 
+  min_price: 
+  max_price: 
+  min_volume: 
+  max_position_size: 
+  transaction_costs: 
+  slippage: 
+  initial_capital: 
+
+# Strategy Parameters  
+strategy:
+  lookback_window:
+  z_score_threshold:
+  volatility_threshold: 
+  gap_threshold:
+  min_signal_strength: 
+  
+  # Factor weights (must sum to 1.0)
+  factor_weights:
+    rsi_factor:
+    vwap_factor: 
+    gap_factor:
+    vol_regime_factor: 
+    time_factor: 
+    volume_factor: 
+    support_resistance_factor: 
+    market_regime_factor: 
+
+# Risk Management
+risk:
+  max_portfolio_risk:
+  max_single_position: 
+  var_confidence:
+  max_drawdown_limit: 
+  stop_loss_threshold:
+  
+# Data Sources
+data:
+  primary_source: "yfinance"
+  backup_source: "alpha_vantage" 
+  
+  api_keys:
+    alpha_vantage: ""
+
+    
+  # Default symbols for testing
+  symbols:
+    - "AAPL"
+    - "MSFT" 
+    - "GOOGL"
+    - "AMZN"
+    - "TSLA"
+    - "META"
+    - "NFLX"
+    - "NVDA"
+    - "JPM"
+    - "BAC"
+    - "WMT"
+    - "DIS"
+    - "XOM"
+    - "V"
+    - "JNJ"
+    - "PG"
+
+# Backtesting
+backtesting:
+  start_date: "2024-01-01"
+  end_date: "2024-12-31"
+  benchmark: "SPY"
+  rebalance_frequency: "daily"
+
+# Output Settings  
+output:
+  results_directory: "results"
+  save_trades: true
+  save_factors: true
+  generate_plots: true
+  export_excel: true
+
+# Dashboard Settings
+dashboard:
+  port: 8050
+  debug: false
+  update_interval: 30  # seconds
+  
+# Logging
+logging:
+  level: "INFO"
+  file: "trading_strategy.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
